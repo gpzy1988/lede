@@ -1,46 +1,34 @@
 #
+# Copyright (c) 2019-2020 P3TERX <https://p3terx.com>
 #
-# 感谢p3terx大神的一键编译脚本
-# 
-# Copyright (C) 2019 P3TERX <https://p3terx.com>
-# <https://github.com/P3TERX/Actions-OpenWrt.git>
+# This is free software, licensed under the MIT License.
+# See /LICENSE for more information.
 #
-#修改以下代码或者开启触发开关都好，要严格按格式对好,前面有多少空格也要看清楚
+# https://github.com/P3TERX/Actions-OpenWrt
+# Description: Build OpenWrt using GitHub Actions
 #
 
-name: Lede-OpenWrt 固件
+name: Build OpenWrt
 
 on:
   repository_dispatch:
-
-#编辑任意指定文件触发开始编译(去掉下面5个#开启,最下面一行是指定修改什么文件就触发编译,我现在是修改diy.config文件触发)
+  release:
+    types: published
   push:
     branches:
-      - master
+      - main
     paths:
-      - 'cm520.config'
-
-
-#release发布触发开始编译(只是一个触发条件,不会发布的,又麻烦,没卵用,不用研究)
-#  release:
-#    types: published
-
-
-#定时触发开始编译(utc時間)
+      - '.config'
 #  schedule:
-#    - cron: 0 8 */9 * *
-
-
-#点☆Star触发开始编译
-  watch:
+#    - cron: 0 8 * * 5
+#  watch:
 #    types: started
-
 
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
   REPO_BRANCH: master
   FEEDS_CONF: feeds.conf.default
-  CONFIG_FILE: cm520.config
+  CONFIG_FILE: .config
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
   SSH_ACTIONS: false
@@ -52,15 +40,14 @@ env:
 
 jobs:
   build:
-    name: 编译OpenWrt-lede固件
     runs-on: ubuntu-18.04
     if: github.event.repository.owner.id == github.event.sender.id
 
     steps:
-    - name: 准备完毕
+    - name: Checkout
       uses: actions/checkout@main
 
-    - name: 开始安装编译所需系统
+    - name: Initialization environment
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
@@ -72,37 +59,36 @@ jobs:
         sudo timedatectl set-timezone "$TZ"
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
-    - name: 下载固件源码
+    - name: Clone source code
       working-directory: /workdir
       run: |
         df -hT $PWD
         git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
-    - name: 加载diy-lede.sh跟feeds.conf.default设置
+    - name: Load custom feeds
       run: |
         [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
         chmod +x $DIY_P1_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P1_SH
-    - name: 下载diy-lede.sh跟feeds.conf.default自定义软件
+    - name: Update feeds
       run: cd openwrt && ./scripts/feeds update -a
 
-    - name: 安装自定义软件
+    - name: Install feeds
       run: cd openwrt && ./scripts/feeds install -a
 
-    - name: 加载diy.config设置
+    - name: Load custom configuration
       run: |
         [ -e files ] && mv files openwrt/files
         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
         chmod +x $DIY_P2_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
-    
-    - name: SSH远程连接服务器配置固件
+    - name: SSH connection to Actions
       uses: P3TERX/debugger-action@main
       if: env.SSH_ACTIONS == 'true' || contains(github.event.action, 'ssh')
 
-    - name: 下载软件包
+    - name: Download package
       id: package
       run: |
         cd openwrt
@@ -110,7 +96,7 @@ jobs:
         make download -j8
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
-    - name: 开始编译固件
+    - name: Compile the firmware
       id: compile
       run: |
         cd openwrt
@@ -120,18 +106,18 @@ jobs:
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
         [ -s DEVICE_NAME ] && echo "::set-env name=DEVICE_NAME::_$(cat DEVICE_NAME)"
         echo "::set-env name=FILE_DATE::_$(date +"%Y%m%d%H%M")"
-    - name: 检查github储存空间情况
+    - name: Check space usage
       if: (!cancelled())
       run: df -hT
 
-    - name: 上传bin文件夹(固件+ipk)在github空间
+    - name: Upload bin directory
       uses: actions/upload-artifact@main
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
       with:
         name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: openwrt/bin
 
-    - name: 整理固件文件夹
+    - name: Organize files
       id: organize
       if: env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
@@ -139,20 +125,20 @@ jobs:
         rm -rf packages
         echo "::set-env name=FIRMWARE::$PWD"
         echo "::set-output name=status::success"
-    - name: 上传固件在github空间
+    - name: Upload firmware directory
       uses: actions/upload-artifact@main
       if: steps.organize.outputs.status == 'success' && !cancelled()
       with:
         name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}
 
-    - name: 上传固件到cowtransfer网盘
+    - name: Upload firmware to cowtransfer
       if: steps.organize.outputs.status == 'success' && env.UPLOAD_COWTRANSFER == 'true' && !cancelled()
       run: |
         curl -fsSL git.io/file-transfer | sh
         ./transfer cow --block 2621440 -s -p 64 --no-progress ${FIRMWARE} 2>&1 | tee cowtransfer.log
         echo "::warning file=cowtransfer.com::$(cat cowtransfer.log | grep https)"
-    - name: 上传固件到WeTransfer网盘
+    - name: Upload firmware to WeTransfer
       if: steps.organize.outputs.status == 'success' && env.UPLOAD_WETRANSFER == 'true' && !cancelled()
       run: |
         curl -fsSL git.io/file-transfer | sh
